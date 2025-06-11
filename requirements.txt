@@ -1,0 +1,13 @@
+# Core web framework
+streamlit==1.44.0
+
+# Data manipulation and analysis
+pandas
+numpy
+
+# Data visualization
+plotly==5.22.0
+
+# Excel file handling
+openpyxl
+xlsxwriter

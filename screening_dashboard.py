@@ -1043,30 +1043,134 @@ def main():
             # Add save button
             if st.button("💾 Save Changes", type="primary"):
                 try:
-                    # Here you would implement saving back to Excel
-                    # For now, just show success message
-                    st.success("Changes saved successfully!")
+                    # Save to GitHub using direct push
+                    success = save_to_github_direct(st.session_state.edited_data)
+                    if success:
+                        st.success("Changes saved to GitHub successfully!")
+                    else:
+                        st.error("Failed to save changes to GitHub")
                 except Exception as e:
                     st.error(f"Error saving changes: {e}")
+
+    # Add these functions at the top of your file (after imports)
+    import requests
+    import base64
+    from io import BytesIO
+
+    def save_to_github_direct(df):
+        """Save dataframe directly to GitHub file (requires write access)"""
+        
+        # GitHub configuration - add these to your secrets or environment
+        GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")  # Your GitHub personal access token
+        REPO_OWNER = "apratim-sigmoid"  # Replace with your GitHub username
+        REPO_NAME = "IB-GenAI-RnD-Screening-Criteria"  # Replace with your repository name
+        FILE_PATH = "screening_criteria_dataset.xlsx"  # Path to your Excel file
+        BRANCH = "main"  # or "master" depending on your default branch
+        
+        if not GITHUB_TOKEN:
+            st.error("GitHub token not found. Please add GITHUB_TOKEN to your secrets.")
+            return False
+        
+        try:
+            # Convert dataframe back to Excel format
+            output = BytesIO()
             
-            # Show what changed
-            with st.expander("📋 View Changes"):
-                changes = []
-                for idx in st.session_state.edited_data.index:
-                    original = str(transposed_data.loc[idx, rejection_reasons_col]) if pd.notna(transposed_data.loc[idx, rejection_reasons_col]) else ""
-                    edited = str(st.session_state.edited_data.loc[idx, rejection_reasons_col]) if pd.notna(st.session_state.edited_data.loc[idx, rejection_reasons_col]) else ""
-                    
-                    if original != edited:
-                        pdf_name = st.session_state.edited_data.loc[idx, 'PDF']
-                        changes.append({
-                            'PDF': pdf_name,
-                            'Original': original,
-                            'New': edited
-                        })
+            # You'll need to convert the transposed data back to original format
+            # This is a simplified version - you may need to adjust based on your exact data structure
+            original_format_df = convert_back_to_original_format(df)
+            
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                original_format_df.to_excel(writer, index=False)
+            
+            # Encode file content as base64
+            file_content = base64.b64encode(output.getvalue()).decode()
+            
+            # Get current file SHA (required for updates)
+            url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
+            headers = {
+                "Authorization": f"token {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                current_sha = response.json()["sha"]
+            else:
+                st.error(f"Could not get current file SHA: {response.status_code}")
+                return False
+            
+            # Update file
+            update_data = {
+                "message": f"Update screening data - {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "content": file_content,
+                "sha": current_sha,
+                "branch": BRANCH
+            }
+            
+            response = requests.put(url, json=update_data, headers=headers)
+            
+            if response.status_code == 200:
+                return True
+            else:
+                st.error(f"Failed to update file: {response.status_code} - {response.text}")
+                return False
                 
-                if changes:
-                    changes_df = pd.DataFrame(changes)
-                    st.dataframe(changes_df, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Error in GitHub save: {str(e)}")
+            return False
+
+    def convert_back_to_original_format(transposed_df):
+        """Convert the transposed dataframe back to original Excel format"""
+        # This function needs to reverse the transposition you did earlier
+        # You'll need to implement this based on your exact data structure
+        
+        # Remove the sequential numbering and get back to original structure
+        df_copy = transposed_df.copy()
+        
+        # Set PDF column as index
+        df_copy = df_copy.set_index('PDF')
+        
+        # Transpose back
+        original_df = df_copy.T
+        
+        # Split the column headers back to Category and Specific Criteria
+        categories = []
+        criteria = []
+        
+        for col_header in original_df.index:
+            if ' - ' in col_header:
+                cat, crit = col_header.split(' - ', 1)
+                categories.append(cat)
+                criteria.append(crit)
+            else:
+                categories.append('')
+                criteria.append(col_header)
+        
+        # Reset index and add Category and Specific Criteria columns
+        original_df = original_df.reset_index(drop=True)
+        original_df.insert(0, 'Category', categories)
+        original_df.insert(1, 'Specific Criteria', criteria)
+        
+        return original_df
+            
+        # Show what changed
+        with st.expander("📋 View Changes"):
+            changes = []
+            for idx in st.session_state.edited_data.index:
+                original = str(transposed_data.loc[idx, rejection_reasons_col]) if pd.notna(transposed_data.loc[idx, rejection_reasons_col]) else ""
+                edited = str(st.session_state.edited_data.loc[idx, rejection_reasons_col]) if pd.notna(st.session_state.edited_data.loc[idx, rejection_reasons_col]) else ""
+                
+                if original != edited:
+                    pdf_name = st.session_state.edited_data.loc[idx, 'PDF']
+                    changes.append({
+                        'PDF': pdf_name,
+                        'Original': original,
+                        'New': edited
+                    })
+            
+            if changes:
+                changes_df = pd.DataFrame(changes)
+                st.dataframe(changes_df, use_container_width=True, hide_index=True)
         
         # Reset button
         if st.button("🔄 Reset All Changes"):

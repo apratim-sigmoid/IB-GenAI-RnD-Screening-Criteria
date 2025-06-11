@@ -42,6 +42,41 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def convert_back_to_original_format(transposed_df):
+    """Convert the transposed dataframe back to original Excel format"""
+    # This function needs to reverse the transposition you did earlier
+    # You'll need to implement this based on your exact data structure
+    
+    # Remove the sequential numbering and get back to original structure
+    df_copy = transposed_df.copy()
+    
+    # Set PDF column as index
+    df_copy = df_copy.set_index('PDF')
+    
+    # Transpose back
+    original_df = df_copy.T
+    
+    # Split the column headers back to Category and Specific Criteria
+    categories = []
+    criteria = []
+    
+    for col_header in original_df.index:
+        if ' - ' in col_header:
+            cat, crit = col_header.split(' - ', 1)
+            categories.append(cat)
+            criteria.append(crit)
+        else:
+            categories.append('')
+            criteria.append(col_header)
+    
+    # Reset index and add Category and Specific Criteria columns
+    original_df = original_df.reset_index(drop=True)
+    original_df.insert(0, 'Category', categories)
+    original_df.insert(1, 'Specific Criteria', criteria)
+    
+    return original_df
+
+
 def save_to_github_direct(df):
     """Save dataframe directly to GitHub file (requires write access)"""
     
@@ -1119,40 +1154,6 @@ def main():
                 except Exception as e:
                     st.error(f"Error saving changes: {e}")
 
-
-    def convert_back_to_original_format(transposed_df):
-        """Convert the transposed dataframe back to original Excel format"""
-        # This function needs to reverse the transposition you did earlier
-        # You'll need to implement this based on your exact data structure
-        
-        # Remove the sequential numbering and get back to original structure
-        df_copy = transposed_df.copy()
-        
-        # Set PDF column as index
-        df_copy = df_copy.set_index('PDF')
-        
-        # Transpose back
-        original_df = df_copy.T
-        
-        # Split the column headers back to Category and Specific Criteria
-        categories = []
-        criteria = []
-        
-        for col_header in original_df.index:
-            if ' - ' in col_header:
-                cat, crit = col_header.split(' - ', 1)
-                categories.append(cat)
-                criteria.append(crit)
-            else:
-                categories.append('')
-                criteria.append(col_header)
-        
-        # Reset index and add Category and Specific Criteria columns
-        original_df = original_df.reset_index(drop=True)
-        original_df.insert(0, 'Category', categories)
-        original_df.insert(1, 'Specific Criteria', criteria)
-        
-        return original_df
             
         # Show what changed
         with st.expander("📋 View Changes"):

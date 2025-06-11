@@ -5,6 +5,9 @@ streamlit==1.44.0
 pandas
 numpy
 
+# HTTP requests for GitHub API
+requests
+
 # Data visualization
 plotly==5.22.0
 

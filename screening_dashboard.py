@@ -44,10 +44,11 @@ st.markdown("""
 
 def convert_back_to_original_format(transposed_df):
     """Convert the transposed dataframe back to original Excel format"""
-    # This function needs to reverse the transposition you did earlier
-    # You'll need to implement this based on your exact data structure
     
-    # Remove the sequential numbering and get back to original structure
+    # Read the original file to get the exact original order
+    original_screening_data = pd.read_excel('screening_criteria_dataset.xlsx')
+    
+    # Create a copy of the transposed dataframe
     df_copy = transposed_df.copy()
     
     # Set PDF column as index
@@ -74,7 +75,36 @@ def convert_back_to_original_format(transposed_df):
     original_df.insert(0, 'Category', categories)
     original_df.insert(1, 'Specific Criteria', criteria)
     
-    return original_df
+    # Now reorder the rows to match the original order
+    # Create a mapping of (Category, Specific Criteria) to original row index
+    original_order = {}
+    for idx, row in original_screening_data.iterrows():
+        key = (row['Category'], row['Specific Criteria'])
+        original_order[key] = idx
+    
+    # Create a list to store the reordered dataframe
+    reordered_rows = []
+    
+    # Go through the original order and find matching rows in our converted data
+    for idx, orig_row in original_screening_data.iterrows():
+        orig_key = (orig_row['Category'], orig_row['Specific Criteria'])
+        
+        # Find this row in our converted dataframe
+        for conv_idx, conv_row in original_df.iterrows():
+            conv_key = (conv_row['Category'], conv_row['Specific Criteria'])
+            
+            if orig_key == conv_key:
+                reordered_rows.append(conv_row)
+                break
+    
+    # Convert back to dataframe with original order
+    if reordered_rows:
+        final_df = pd.DataFrame(reordered_rows)
+        final_df = final_df.reset_index(drop=True)
+        return final_df
+    else:
+        # Fallback to the original approach if matching fails
+        return original_df
 
 
 def save_to_github_direct(df):
@@ -1116,21 +1146,21 @@ def main():
         
         # Apply screening classification colors
         if screening_col:
-            styled_df = styled_df.applymap(
+            styled_df = styled_df.map(
                 color_screening_classification, 
                 subset=[screening_col]
             )
         
         # Apply quality value colors
         if quality_cols:
-            styled_df = styled_df.applymap(
+            styled_df = styled_df.map(
                 color_quality_values,
                 subset=quality_cols
             )
         
         # Apply boolean value colors
         if boolean_cols:
-            styled_df = styled_df.applymap(
+            styled_df = styled_df.map(
                 color_boolean_values,
                 subset=boolean_cols
             )

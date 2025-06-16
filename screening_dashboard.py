@@ -286,9 +286,9 @@ def create_sankey_chart(sankey_df):
     
 
 def convert_back_to_original_format(transposed_df):
-    """Convert the transposed dataframe back to original Excel format"""
+    """Convert the transposed dataframe back to original Excel format with proper data types"""
     
-    # Read the original file to get the exact original order
+    # Read the original file to get the exact original order AND original data types
     original_screening_data = pd.read_excel('screening_criteria_dataset.xlsx')
     
     # Create a copy of the transposed dataframe
@@ -318,29 +318,48 @@ def convert_back_to_original_format(transposed_df):
     original_df.insert(0, 'Category', categories)
     original_df.insert(1, 'Specific Criteria', criteria)
     
-    # Now reorder the rows to match the original order
-    # Create a mapping of (Category, Specific Criteria) to original row index
-    original_order = {}
+    # Create a mapping of (Category, Specific Criteria) to original row data
+    original_lookup = {}
     for idx, row in original_screening_data.iterrows():
         key = (row['Category'], row['Specific Criteria'])
-        original_order[key] = idx
+        original_lookup[key] = row
     
-    # Create a list to store the reordered dataframe
+    # Create a list to store the reordered dataframe with restored data types
     reordered_rows = []
     
-    # Go through the original order and find matching rows in our converted data
+    # Go through the original order and restore data types
     for idx, orig_row in original_screening_data.iterrows():
         orig_key = (orig_row['Category'], orig_row['Specific Criteria'])
         
         # Find this row in our converted dataframe
+        found_row = None
         for conv_idx, conv_row in original_df.iterrows():
             conv_key = (conv_row['Category'], conv_row['Specific Criteria'])
             
             if orig_key == conv_key:
-                reordered_rows.append(conv_row)
+                found_row = conv_row.copy()
                 break
+        
+        if found_row is not None:
+            # Restore original data types for all PDF columns
+            pdf_columns = [col for col in found_row.index if col not in ['Category', 'Specific Criteria']]
+            
+            for pdf_col in pdf_columns:
+                if pdf_col in orig_row.index:
+                    original_value = orig_row[pdf_col]
+                    current_value = found_row[pdf_col]
+                    
+                    # Only restore if the original value was not a simple string/number/boolean
+                    # and if the current value has been modified from its original form
+                    if should_restore_original_value(original_value, current_value, orig_row['Specific Criteria']):
+                        found_row[pdf_col] = original_value
+                    else:
+                        # Keep the potentially edited value (like rejection reasons)
+                        found_row[pdf_col] = current_value
+            
+            reordered_rows.append(found_row)
     
-    # Convert back to dataframe with original order
+    # Convert back to dataframe with original order and data types
     if reordered_rows:
         final_df = pd.DataFrame(reordered_rows)
         final_df = final_df.reset_index(drop=True)
@@ -348,6 +367,139 @@ def convert_back_to_original_format(transposed_df):
     else:
         # Fallback to the original approach if matching fails
         return original_df
+
+
+def should_restore_original_value(original_value, current_value, criteria_name):
+    """
+    Determine if we should restore the original value or keep the current (potentially edited) value
+    """
+    # Always allow editing of rejection reasons
+    if 'rejection' in criteria_name.lower():
+        return False
+    
+    # If the original value was a list or dict, restore it unless it was intentionally edited
+    if isinstance(original_value, (list, dict)):
+        return True
+    
+    # If the original was a number and current is a string representation, restore the number
+    if isinstance(original_value, (int, float)) and isinstance(current_value, str):
+        try:
+            # Check if the string is just a string representation of the number
+            if str(original_value) == current_value:
+                return True
+        except:
+            pass
+    
+    # For boolean values that got converted to strings
+    if isinstance(original_value, bool) and isinstance(current_value, str):
+        if str(original_value) == current_value:
+            return True
+    
+    # If values are essentially the same, keep original type
+    if str(original_value) == str(current_value):
+        return True
+    
+    # Otherwise, keep the current value (it might have been intentionally edited)
+    return False
+
+
+def format_competitor_products_for_display(value):
+    """Format competitor products dictionary into readable format for dashboard display only"""
+    if pd.isna(value) or str(value) in ['{}', '', 'nan']:
+        return ''
+    
+    try:
+        # Company name abbreviations
+        company_abbrev = {
+            'Philip Morris International': 'PMI',
+            'British American Tobacco': 'BAT', 
+            'Japan Tobacco International': 'JTI',
+            'Imperial Brands': 'Imperial',
+            'Reynolds American': 'RAI'
+        }
+        
+        # Parse the value if it's a string representation of a dict
+        if isinstance(value, str):
+            # Handle cases where it might be a dict string
+            if value.startswith('{') and value.endswith('}'):
+                try:
+                    parsed_value = ast.literal_eval(value)
+                except:
+                    try:
+                        parsed_value = json.loads(value.replace("'", '"'))
+                    except:
+                        return str(value)
+            else:
+                return str(value)
+        elif isinstance(value, dict):
+            parsed_value = value
+        else:
+            return str(value)
+        
+        # Format the dictionary
+        formatted_parts = []
+        for company, products in parsed_value.items():
+            # Get abbreviation or use original name
+            abbrev = company_abbrev.get(company, company)
+            
+            # Handle products list
+            if isinstance(products, list):
+                products_str = ', '.join([str(p) for p in products if p])
+            else:
+                products_str = str(products)
+            
+            if products_str:
+                formatted_parts.append(f"{abbrev}: {products_str}")
+        
+        return '; '.join(formatted_parts)
+        
+    except Exception as e:
+        # If parsing fails, return the original value as string
+        return str(value) if str(value) != '{}' else ''
+
+
+def create_display_dataframe(screening_data):
+    """Create a properly formatted dataframe for display that preserves original data for saving"""
+    # Transpose the data so criteria are columns and PDFs are rows
+    transposed_data = screening_data.set_index(['Category', 'Specific Criteria']).T
+    
+    # Create multi-level column headers
+    transposed_data.columns = [f"{cat} - {crit}" for cat, crit in transposed_data.columns]
+    
+    # Reset index to make PDF names a column
+    transposed_data = transposed_data.reset_index()
+    transposed_data = transposed_data.rename(columns={'index': 'PDF'})
+    
+    # Create a display version with formatting
+    display_data = transposed_data.copy()
+    
+    # Clean up list formatting for display - but keep original data separate
+    for col in display_data.columns:
+        if col != 'PDF':  # Don't modify the PDF column
+            if 'Competitor Products' in col:
+                # Special handling for competitor products dictionary format
+                display_data[col] = display_data[col].apply(lambda x: format_competitor_products_for_display(x))
+            else:
+                # General formatting for other columns - only for display
+                display_data[col] = display_data[col].apply(lambda x: 
+                    str(x).replace('[', '').replace(']', '').replace("'", '') if pd.notna(x) and str(x) not in ['{}', ''] else 
+                    '' if str(x) == '{}' else x)
+    
+    # Reorder columns to move Classification System columns next to PDF
+    all_columns = list(display_data.columns)
+    pdf_col = ['PDF']
+    classification_cols = [col for col in all_columns if 'Classification System' in col]
+    other_cols = [col for col in all_columns if col != 'PDF' and 'Classification System' not in col]
+    
+    # New column order: PDF, Classification System columns, then all others
+    new_column_order = pdf_col + classification_cols + other_cols
+    display_data = display_data[new_column_order]
+    
+    # Add sequential numbering starting from 1 and set as index
+    display_data.index = range(1, len(display_data) + 1)
+    display_data.index.name = 'No.'
+    
+    return display_data, transposed_data  # Return both display and original data
 
 
 def save_to_github_direct(df):
@@ -1236,383 +1388,312 @@ def main():
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview", "Incremental Impact", "Product Analysis", "Health Endpoints", "Selected PDFs"])
     
     with tab1:
-        # Helper function for formatting competitor products
-        def format_competitor_products(value):
-            """Format competitor products dictionary into readable format"""
-            if pd.isna(value) or str(value) in ['{}', '', 'nan']:
+            # Category distribution
+            st.plotly_chart(create_category_distribution(criteria_data, selected_indices, pdf_columns, sample_size_range), use_container_width=True)
+            
+            # Criteria effectiveness
+            if selected_indices:
+                st.subheader("Criteria Effectiveness")
+                criteria_effectiveness = []
+                for idx in selected_indices:
+                    if 'sample size' in criteria_data[idx]['criteria'].lower():
+                        matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx, sample_size_range)
+                    else:
+                        matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx)
+                    
+                    criteria_effectiveness.append({
+                        'Criteria': f"{criteria_data[idx]['category']} - {criteria_data[idx]['criteria']}",
+                        'PDFs Matched': len(matching_pdfs),
+                        'Percentage': f"{len(matching_pdfs)/total_pdfs*100:.1f}%"
+                    })
+                
+                df_effectiveness = pd.DataFrame(criteria_effectiveness)
+                df_effectiveness = df_effectiveness.sort_values('PDFs Matched', ascending=False)
+                st.dataframe(df_effectiveness, use_container_width=True, hide_index=True)
+            
+            # Raw data table (transposed) - UPDATED SECTION
+            st.subheader("Screening Data")
+            
+            # Create both display and original data versions
+            display_data, original_transposed_data = create_display_dataframe(screening_data)
+            
+            # Initialize session state for edited data if not exists
+            if 'edited_data' not in st.session_state:
+                st.session_state.edited_data = display_data.copy()
+                st.session_state.original_data = original_transposed_data.copy()  # Keep original for restoration
+            
+            # Find the rejection reasons column
+            rejection_reasons_col = None
+            for col in display_data.columns:
+                if 'Rejection reasons' in col:
+                    rejection_reasons_col = col
+                    break
+            
+            # Create editing interface for rejection reasons
+            if rejection_reasons_col:
+                st.subheader("Edit Rejection Reasons")
+                
+                # Create expandable editor for each row
+                with st.expander("📝 Click to edit rejection reasons for individual PDFs"):
+                    # Use a container with height constraint
+                    container = st.container(height=400)
+                    
+                    with container:
+                        for idx, row in st.session_state.edited_data.iterrows():
+                            pdf_name = row['PDF']
+                            current_reason = str(row[rejection_reasons_col]) if pd.notna(row[rejection_reasons_col]) else ""
+                            
+                            # Create a text input for each PDF
+                            new_reason = st.text_input(
+                                f"**{pdf_name}**",
+                                value=current_reason,
+                                key=f"rejection_reason_{idx}",
+                                help="Edit the rejection reason for this PDF"
+                            )
+                            
+                            # Update both edited data and original data if changed
+                            if new_reason != current_reason:
+                                st.session_state.edited_data.loc[idx, rejection_reasons_col] = new_reason
+                                # Also update the original data to preserve the edit
+                                if idx in st.session_state.original_data.index:
+                                    st.session_state.original_data.loc[idx, rejection_reasons_col] = new_reason
+            
+            # Create styling functions
+            def color_screening_classification(val):
+                """Apply color coding to screening classification values"""
+                if val == 'Needs Summary':
+                    return 'background-color: #d4edda'  # Pastel green
+                elif val == 'Record for Later':
+                    return 'background-color: #fff3cd'  # Pastel yellow
+                elif val == 'No Action':
+                    return 'background-color: #f8d7da'  # Pastel red
                 return ''
             
-            try:
-                # Company name abbreviations
-                company_abbrev = {
-                    'Philip Morris International': 'PMI',
-                    'British American Tobacco': 'BAT', 
-                    'Japan Tobacco International': 'JTI',
-                    'Imperial Brands': 'Imperial',
-                    'Reynolds American': 'RAI'
+            def color_quality_values(val):
+                """Apply color coding to quality-related values"""
+                val_str = str(val).lower()
+                if 'high' in val_str or 'top-tier' in val_str:
+                    return 'background-color: #d4edda'  # Pastel green
+                elif 'medium' in val_str or 'moderate' in val_str or 'mid-tier' in val_str:
+                    return 'background-color: #fff3cd'  # Pastel yellow
+                elif 'low' in val_str or 'unknown' in val_str or 'low-tier' in val_str:
+                    return 'background-color: #f8d7da'  # Pastel red
+                return ''
+            
+            def color_boolean_values(val):
+                """Apply color coding to boolean values"""
+                if str(val).lower() == 'true':
+                    return 'color: #28a745'  # Green text
+                elif str(val).lower() == 'false':
+                    return 'color: #dc3545'  # Red text
+                return ''
+            
+            # Find columns for styling
+            screening_col = None
+            quality_cols = []
+            boolean_cols = []
+            
+            # List of columns that contain boolean values
+            boolean_criteria = [
+                'Competitor-funded research',
+                'Priority health endpoints', 
+                'Nicotine general studies',
+                'Peer review status',
+                'Novel/interesting findings'
+            ]
+            
+            # List of quality-related criteria
+            quality_criteria = [
+                'Journal quality',
+                'Methodology appropriateness',
+                'Quality assessment'
+            ]
+            
+            for col in st.session_state.edited_data.columns:
+                if 'Screening classification' in col:
+                    screening_col = col
+                
+                # Check if this column contains quality criteria
+                for criteria in quality_criteria:
+                    if criteria in col:
+                        quality_cols.append(col)
+                        break
+                
+                # Check if this column contains boolean criteria
+                for criteria in boolean_criteria:
+                    if criteria in col:
+                        boolean_cols.append(col)
+                        break
+            
+            # Apply styling to the edited data
+            styled_df = st.session_state.edited_data.style
+            
+            # Apply screening classification colors
+            if screening_col:
+                styled_df = styled_df.map(
+                    color_screening_classification, 
+                    subset=[screening_col]
+                )
+            
+            # Apply quality value colors
+            if quality_cols:
+                styled_df = styled_df.map(
+                    color_quality_values,
+                    subset=quality_cols
+                )
+            
+            # Apply boolean value colors
+            if boolean_cols:
+                styled_df = styled_df.map(
+                    color_boolean_values,
+                    subset=boolean_cols
+                )
+            
+            # Display the styled dataframe
+            st.dataframe(styled_df, use_container_width=True, height=400)
+            
+            # Show changes indicator
+            if not st.session_state.edited_data.equals(display_data):
+                st.success("✅ Changes detected in rejection reasons!")
+                
+                # Add save button
+                if st.button("💾 Save Changes", type="primary"):
+                    try:
+                        # Use the original data with edits applied for saving
+                        data_to_save = st.session_state.original_data.copy()
+                        
+                        # Apply any rejection reason edits to the original data
+                        if rejection_reasons_col:
+                            for idx in st.session_state.edited_data.index:
+                                if idx in data_to_save.index:
+                                    data_to_save.loc[idx, rejection_reasons_col] = st.session_state.edited_data.loc[idx, rejection_reasons_col]
+                        
+                        # Save to GitHub using the original data structure
+                        success = save_to_github_direct(data_to_save)
+                        if success:
+                            st.success("Changes saved to GitHub successfully!")
+                            # Update the baseline for change detection
+                            display_data, _ = create_display_dataframe(screening_data)
+                            st.session_state.edited_data = display_data.copy()
+                        else:
+                            st.error("Failed to save changes to GitHub")
+                    except Exception as e:
+                        st.error(f"Error saving changes: {e}")
+
+            # Show what changed
+            with st.expander("📋 View Changes"):
+                changes = []
+                for idx in st.session_state.edited_data.index:
+                    original = str(display_data.loc[idx, rejection_reasons_col]) if pd.notna(display_data.loc[idx, rejection_reasons_col]) else ""
+                    edited = str(st.session_state.edited_data.loc[idx, rejection_reasons_col]) if pd.notna(st.session_state.edited_data.loc[idx, rejection_reasons_col]) else ""
+                    
+                    if original != edited:
+                        pdf_name = st.session_state.edited_data.loc[idx, 'PDF']
+                        changes.append({
+                            'PDF': pdf_name,
+                            'Original': original,
+                            'New': edited
+                        })
+                
+                if changes:
+                    changes_df = pd.DataFrame(changes)
+                    st.dataframe(changes_df, use_container_width=True, hide_index=True)
+            
+            # Reset button
+            if st.button("🔄 Reset All Changes"):
+                display_data, original_transposed_data = create_display_dataframe(screening_data)
+                st.session_state.edited_data = display_data.copy()
+                st.session_state.original_data = original_transposed_data.copy()
+                st.rerun()
+            
+            # Add download button for the edited Excel data
+            def convert_to_excel_with_formatting(df):
+                """Convert dataframe to Excel with formatting intact"""
+                from io import BytesIO
+                import xlsxwriter
+                
+                output = BytesIO()
+                
+                # Create a workbook with nan_inf_to_errors option
+                workbook = xlsxwriter.Workbook(output, {'in_memory': True, 'nan_inf_to_errors': True})
+                worksheet = workbook.add_worksheet('Screening Data')
+                
+                # Define formats for different categories
+                screening_formats = {
+                    'Needs Summary': workbook.add_format({'bg_color': '#d4edda'}),
+                    'Record for Later': workbook.add_format({'bg_color': '#fff3cd'}),
+                    'No Action': workbook.add_format({'bg_color': '#f8d7da'})
                 }
                 
-                # Parse the value if it's a string representation of a dict
-                if isinstance(value, str):
-                    # Handle cases where it might be a dict string
-                    if value.startswith('{') and value.endswith('}'):
-                        try:
-                            parsed_value = ast.literal_eval(value)
-                        except:
-                            try:
-                                parsed_value = json.loads(value.replace("'", '"'))
-                            except:
-                                return str(value)
-                    else:
-                        return str(value)
-                elif isinstance(value, dict):
-                    parsed_value = value
-                else:
-                    return str(value)
+                quality_formats = {
+                    'high': workbook.add_format({'bg_color': '#d4edda'}),
+                    'medium': workbook.add_format({'bg_color': '#fff3cd'}),
+                    'low': workbook.add_format({'bg_color': '#f8d7da'})
+                }
                 
-                # Format the dictionary
-                formatted_parts = []
-                for company, products in parsed_value.items():
-                    # Get abbreviation or use original name
-                    abbrev = company_abbrev.get(company, company)
-                    
-                    # Handle products list
-                    if isinstance(products, list):
-                        products_str = ', '.join([str(p) for p in products if p])
-                    else:
-                        products_str = str(products)
-                    
-                    if products_str:
-                        formatted_parts.append(f"{abbrev}: {products_str}")
+                boolean_formats = {
+                    'True': workbook.add_format({'font_color': '#28a745'}),
+                    'False': workbook.add_format({'font_color': '#dc3545'})
+                }
                 
-                return '; '.join(formatted_parts)
+                # Write headers
+                for col_idx, col_name in enumerate(df.columns):
+                    worksheet.write(0, col_idx, col_name)
                 
-            except Exception as e:
-                # If parsing fails, return the original value as string
-                return str(value) if str(value) != '{}' else ''
-        
-        # Category distribution
-        st.plotly_chart(create_category_distribution(criteria_data, selected_indices, pdf_columns, sample_size_range), use_container_width=True)
-        
-        # Criteria effectiveness
-        if selected_indices:
-            st.subheader("Criteria Effectiveness")
-            criteria_effectiveness = []
-            for idx in selected_indices:
-                if 'sample size' in criteria_data[idx]['criteria'].lower():
-                    matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx, sample_size_range)
-                else:
-                    matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx)
-                
-                criteria_effectiveness.append({
-                    'Criteria': f"{criteria_data[idx]['category']} - {criteria_data[idx]['criteria']}",
-                    'PDFs Matched': len(matching_pdfs),
-                    'Percentage': f"{len(matching_pdfs)/total_pdfs*100:.1f}%"
-                })
-            
-            df_effectiveness = pd.DataFrame(criteria_effectiveness)
-            df_effectiveness = df_effectiveness.sort_values('PDFs Matched', ascending=False)
-            st.dataframe(df_effectiveness, use_container_width=True, hide_index=True)
-        
-        # Raw data table (transposed)
-        st.subheader("Screening Data")
-        
-        # Transpose the data so criteria are columns and PDFs are rows
-        transposed_data = screening_data.set_index(['Category', 'Specific Criteria']).T
-        
-        # Create multi-level column headers
-        transposed_data.columns = [f"{cat} - {crit}" for cat, crit in transposed_data.columns]
-        
-        # Reset index to make PDF names a column
-        transposed_data = transposed_data.reset_index()
-        transposed_data = transposed_data.rename(columns={'index': 'PDF'})
-        
-        # Clean up list formatting - remove square brackets
-        for col in transposed_data.columns:
-            if col != 'PDF':  # Don't modify the PDF column
-                if 'Competitor Products' in col:
-                    # Special handling for competitor products dictionary format
-                    transposed_data[col] = transposed_data[col].apply(lambda x: format_competitor_products(x))
-                else:
-                    # General formatting for other columns
-                    transposed_data[col] = transposed_data[col].apply(lambda x: 
-                        str(x).replace('[', '').replace(']', '').replace("'", '') if pd.notna(x) and str(x) not in ['{}', ''] else 
-                        '' if str(x) == '{}' else x)
-        
-        # Reorder columns to move Classification System columns next to PDF
-        all_columns = list(transposed_data.columns)
-        pdf_col = ['PDF']
-        classification_cols = [col for col in all_columns if 'Classification System' in col]
-        other_cols = [col for col in all_columns if col != 'PDF' and 'Classification System' not in col]
-        
-        # New column order: PDF, Classification System columns, then all others
-        new_column_order = pdf_col + classification_cols + other_cols
-        transposed_data = transposed_data[new_column_order]
-        
-        # Add sequential numbering starting from 1 and set as index
-        transposed_data.index = range(1, len(transposed_data) + 1)
-        transposed_data.index.name = 'No.'
-        
-        # Initialize session state for edited data if not exists
-        if 'edited_data' not in st.session_state:
-            st.session_state.edited_data = transposed_data.copy()
-        
-        # Find the rejection reasons column
-        rejection_reasons_col = None
-        for col in transposed_data.columns:
-            if 'Rejection reasons' in col:
-                rejection_reasons_col = col
-                break
-        
-        # Create editing interface for rejection reasons
-        if rejection_reasons_col:
-            st.subheader("Edit Rejection Reasons")
-            
-            # Create expandable editor for each row
-            with st.expander("📝 Click to edit rejection reasons for individual PDFs"):
-                # Use a container with height constraint
-                container = st.container(height=400)
-                
-                with container:
-                    for idx, row in st.session_state.edited_data.iterrows():
-                        pdf_name = row['PDF']
-                        current_reason = str(row[rejection_reasons_col]) if pd.notna(row[rejection_reasons_col]) else ""
+                # Write data with formatting
+                for row_idx, (index, row) in enumerate(df.iterrows(), start=1):
+                    for col_idx, (col_name, value) in enumerate(row.items()):
+                        cell_format = None
                         
-                        # Create a text input for each PDF
-                        new_reason = st.text_input(
-                            f"**{pdf_name}**",
-                            value=current_reason,
-                            key=f"rejection_reason_{idx}",
-                            help="Edit the rejection reason for this PDF"
-                        )
+                        # Handle NaN/None values
+                        if pd.isna(value) or value is None:
+                            value = ""
                         
-                        # Update the edited data if changed
-                        if new_reason != current_reason:
-                            st.session_state.edited_data.loc[idx, rejection_reasons_col] = new_reason
-        
-        # Create styling functions
-        def color_screening_classification(val):
-            """Apply color coding to screening classification values"""
-            if val == 'Needs Summary':
-                return 'background-color: #d4edda'  # Pastel green
-            elif val == 'Record for Later':
-                return 'background-color: #fff3cd'  # Pastel yellow
-            elif val == 'No Action':
-                return 'background-color: #f8d7da'  # Pastel red
-            return ''
-        
-        def color_quality_values(val):
-            """Apply color coding to quality-related values"""
-            val_str = str(val).lower()
-            if 'high' in val_str or 'top-tier' in val_str:
-                return 'background-color: #d4edda'  # Pastel green
-            elif 'medium' in val_str or 'moderate' in val_str or 'mid-tier' in val_str:
-                return 'background-color: #fff3cd'  # Pastel yellow
-            elif 'low' in val_str or 'unknown' in val_str or 'low-tier' in val_str:
-                return 'background-color: #f8d7da'  # Pastel red
-            return ''
-        
-        def color_boolean_values(val):
-            """Apply color coding to boolean values"""
-            if str(val).lower() == 'true':
-                return 'color: #28a745'  # Green text
-            elif str(val).lower() == 'false':
-                return 'color: #dc3545'  # Red text
-            return ''
-        
-        # Find columns for styling
-        screening_col = None
-        quality_cols = []
-        boolean_cols = []
-        
-        # List of columns that contain boolean values
-        boolean_criteria = [
-            'Competitor-funded research',
-            'Priority health endpoints', 
-            'Nicotine general studies',
-            'Peer review status',
-            'Novel/interesting findings'
-        ]
-        
-        # List of quality-related criteria
-        quality_criteria = [
-            'Journal quality',
-            'Methodology appropriateness',
-            'Quality assessment'
-        ]
-        
-        for col in st.session_state.edited_data.columns:
-            if 'Screening classification' in col:
-                screening_col = col
-            
-            # Check if this column contains quality criteria
-            for criteria in quality_criteria:
-                if criteria in col:
-                    quality_cols.append(col)
-                    break
-            
-            # Check if this column contains boolean criteria
-            for criteria in boolean_criteria:
-                if criteria in col:
-                    boolean_cols.append(col)
-                    break
-        
-        # Apply styling to the edited data
-        styled_df = st.session_state.edited_data.style
-        
-        # Apply screening classification colors
-        if screening_col:
-            styled_df = styled_df.map(
-                color_screening_classification, 
-                subset=[screening_col]
-            )
-        
-        # Apply quality value colors
-        if quality_cols:
-            styled_df = styled_df.map(
-                color_quality_values,
-                subset=quality_cols
-            )
-        
-        # Apply boolean value colors
-        if boolean_cols:
-            styled_df = styled_df.map(
-                color_boolean_values,
-                subset=boolean_cols
-            )
-        
-        # Display the styled dataframe
-        st.dataframe(styled_df, use_container_width=True, height=400)
-        
-        # Show changes indicator
-        if not st.session_state.edited_data.equals(transposed_data):
-            st.success("✅ Changes detected in rejection reasons!")
-            
-            # Add save button
-            if st.button("💾 Save Changes", type="primary"):
-                try:
-                    # Save to GitHub using direct push
-                    success = save_to_github_direct(st.session_state.edited_data)
-                    if success:
-                        st.success("Changes saved to GitHub successfully!")
-                    else:
-                        st.error("Failed to save changes to GitHub")
-                except Exception as e:
-                    st.error(f"Error saving changes: {e}")
-
-            
-        # Show what changed
-        with st.expander("📋 View Changes"):
-            changes = []
-            for idx in st.session_state.edited_data.index:
-                original = str(transposed_data.loc[idx, rejection_reasons_col]) if pd.notna(transposed_data.loc[idx, rejection_reasons_col]) else ""
-                edited = str(st.session_state.edited_data.loc[idx, rejection_reasons_col]) if pd.notna(st.session_state.edited_data.loc[idx, rejection_reasons_col]) else ""
+                        # Check for screening classification formatting
+                        if 'Screening classification' in col_name:
+                            if value in screening_formats:
+                                cell_format = screening_formats[value]
+                        
+                        # Check for quality formatting
+                        elif any(criteria in col_name for criteria in ['Journal quality', 'Methodology appropriateness', 'Quality assessment']):
+                            val_str = str(value).lower()
+                            if 'high' in val_str or 'top-tier' in val_str:
+                                cell_format = quality_formats['high']
+                            elif 'medium' in val_str or 'moderate' in val_str or 'mid-tier' in val_str:
+                                cell_format = quality_formats['medium']
+                            elif 'low' in val_str or 'unknown' in val_str or 'low-tier' in val_str:
+                                cell_format = quality_formats['low']
+                        
+                        # Check for boolean formatting
+                        elif any(criteria in col_name for criteria in ['Competitor-funded research', 'Priority health endpoints', 'Nicotine general studies', 'Peer review status', 'Novel/interesting findings']):
+                            if str(value).lower() == 'true':
+                                cell_format = boolean_formats['True']
+                            elif str(value).lower() == 'false':
+                                cell_format = boolean_formats['False']
+                        
+                        # Write the cell with or without formatting
+                        if cell_format:
+                            worksheet.write(row_idx, col_idx, value, cell_format)
+                        else:
+                            worksheet.write(row_idx, col_idx, value)
                 
-                if original != edited:
-                    pdf_name = st.session_state.edited_data.loc[idx, 'PDF']
-                    changes.append({
-                        'PDF': pdf_name,
-                        'Original': original,
-                        'New': edited
-                    })
+                # Auto-adjust column widths
+                for col_idx, col_name in enumerate(df.columns):
+                    max_length = max(len(str(col_name)), max(len(str(df.iloc[row_idx, col_idx])) for row_idx in range(len(df))))
+                    worksheet.set_column(col_idx, col_idx, min(max_length + 2, 50))
+                
+                workbook.close()
+                output.seek(0)
+                return output.getvalue()
             
-            if changes:
-                changes_df = pd.DataFrame(changes)
-                st.dataframe(changes_df, use_container_width=True, hide_index=True)
-        
-        # Reset button
-        if st.button("🔄 Reset All Changes"):
-            st.session_state.edited_data = transposed_data.copy()
-            st.rerun()
-        
-        # Add download button for the edited Excel data
-        def convert_to_excel_with_formatting(df):
-            """Convert dataframe to Excel with formatting intact"""
-            from io import BytesIO
-            import xlsxwriter
-            
-            output = BytesIO()
-            
-            # Create a workbook with nan_inf_to_errors option
-            workbook = xlsxwriter.Workbook(output, {'in_memory': True, 'nan_inf_to_errors': True})
-            worksheet = workbook.add_worksheet('Screening Data')
-            
-            # Define formats for different categories
-            screening_formats = {
-                'Needs Summary': workbook.add_format({'bg_color': '#d4edda'}),
-                'Record for Later': workbook.add_format({'bg_color': '#fff3cd'}),
-                'No Action': workbook.add_format({'bg_color': '#f8d7da'})
-            }
-            
-            quality_formats = {
-                'high': workbook.add_format({'bg_color': '#d4edda'}),
-                'medium': workbook.add_format({'bg_color': '#fff3cd'}),
-                'low': workbook.add_format({'bg_color': '#f8d7da'})
-            }
-            
-            boolean_formats = {
-                'True': workbook.add_format({'font_color': '#28a745'}),
-                'False': workbook.add_format({'font_color': '#dc3545'})
-            }
-            
-            # Write headers
-            for col_idx, col_name in enumerate(df.columns):
-                worksheet.write(0, col_idx, col_name)
-            
-            # Write data with formatting
-            for row_idx, (index, row) in enumerate(df.iterrows(), start=1):
-                for col_idx, (col_name, value) in enumerate(row.items()):
-                    cell_format = None
-                    
-                    # Handle NaN/None values
-                    if pd.isna(value) or value is None:
-                        value = ""
-                    
-                    # Check for screening classification formatting
-                    if 'Screening classification' in col_name:
-                        if value in screening_formats:
-                            cell_format = screening_formats[value]
-                    
-                    # Check for quality formatting
-                    elif any(criteria in col_name for criteria in ['Journal quality', 'Methodology appropriateness', 'Quality assessment']):
-                        val_str = str(value).lower()
-                        if 'high' in val_str or 'top-tier' in val_str:
-                            cell_format = quality_formats['high']
-                        elif 'medium' in val_str or 'moderate' in val_str or 'mid-tier' in val_str:
-                            cell_format = quality_formats['medium']
-                        elif 'low' in val_str or 'unknown' in val_str or 'low-tier' in val_str:
-                            cell_format = quality_formats['low']
-                    
-                    # Check for boolean formatting
-                    elif any(criteria in col_name for criteria in ['Competitor-funded research', 'Priority health endpoints', 'Nicotine general studies', 'Peer review status', 'Novel/interesting findings']):
-                        if str(value).lower() == 'true':
-                            cell_format = boolean_formats['True']
-                        elif str(value).lower() == 'false':
-                            cell_format = boolean_formats['False']
-                    
-                    # Write the cell with or without formatting
-                    if cell_format:
-                        worksheet.write(row_idx, col_idx, value, cell_format)
-                    else:
-                        worksheet.write(row_idx, col_idx, value)
-            
-            # Auto-adjust column widths
-            for col_idx, col_name in enumerate(df.columns):
-                max_length = max(len(str(col_name)), max(len(str(df.iloc[row_idx, col_idx])) for row_idx in range(len(df))))
-                worksheet.set_column(col_idx, col_idx, min(max_length + 2, 50))
-            
-            workbook.close()
-            output.seek(0)
-            return output.getvalue()
-        
-        excel_data = convert_to_excel_with_formatting(st.session_state.edited_data)
-        st.download_button(
-            label="📥 Download Data",
-            data=excel_data,
-            file_name="screening_data_edited.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
+            # Use the display data for Excel export (formatted for readability)
+            excel_data = convert_to_excel_with_formatting(st.session_state.edited_data)
+            st.download_button(
+                label="📥 Download Data",
+                data=excel_data,
+                file_name="screening_data_edited.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     
     with tab2:
         st.subheader("Incremental Impact Analysis")

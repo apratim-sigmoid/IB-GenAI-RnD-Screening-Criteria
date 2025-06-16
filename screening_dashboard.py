@@ -1421,6 +1421,8 @@ def main():
         if 'edited_data' not in st.session_state:
             st.session_state.edited_data = display_data.copy()
             st.session_state.original_data = original_transposed_data.copy()  # Keep original for restoration
+            # Create a mapping from display index to original index
+            st.session_state.index_mapping = {i: i for i in range(len(display_data))}
         
         # Refresh data when it's been updated externally (like after GitHub save)
         if not st.session_state.edited_data.equals(display_data):
@@ -1431,6 +1433,7 @@ def main():
             if not st.session_state.original_data.equals(current_original_data):
                 st.session_state.edited_data = current_display_data.copy()
                 st.session_state.original_data = current_original_data.copy()
+                st.session_state.index_mapping = {i: i for i in range(len(current_display_data))}
                 st.info("📱 Data refreshed from external changes")
         
         # Find the rejection reasons column
@@ -1450,23 +1453,25 @@ def main():
                 container = st.container(height=400)
                 
                 with container:
-                    for idx, row in st.session_state.edited_data.iterrows():
+                    for display_idx, row in st.session_state.edited_data.iterrows():
+                        # Get the original index from our mapping
+                        original_idx = st.session_state.index_mapping[display_idx]
                         pdf_name = row['PDF']
                         current_reason = str(row[rejection_reasons_col]) if pd.notna(row[rejection_reasons_col]) else ""
                         
                         # Create a text input for each PDF - use PDF name in key to avoid conflicts
                         new_reason = st.text_input(
-                            f"**{idx + 1}. {pdf_name}**",  # Show numbering in label
+                            f"**{display_idx + 1}. {pdf_name}**",  # Show numbering in label
                             value=current_reason,
-                            key=f"rejection_reason_{pdf_name}_{idx}",  # Use both PDF name and index for uniqueness
+                            key=f"rejection_reason_{pdf_name}_{display_idx}",  # Use display index for uniqueness
                             help="Edit the rejection reason for this PDF"
                         )
                         
                         # Update both edited data and original data if changed
                         if new_reason != current_reason:
-                            st.session_state.edited_data.loc[idx, rejection_reasons_col] = new_reason
-                            # Update the original data using the SAME index (both use 0, 1, 2...)
-                            st.session_state.original_data.loc[idx, rejection_reasons_col] = new_reason
+                            st.session_state.edited_data.loc[display_idx, rejection_reasons_col] = new_reason
+                            # Update the original data using the mapped original index
+                            st.session_state.original_data.loc[original_idx, rejection_reasons_col] = new_reason
         
         # Create styling functions
         def color_screening_classification(val):
@@ -1535,40 +1540,16 @@ def main():
                     boolean_cols.append(col)
                     break
         
-        # Apply styling to the edited data
-        styled_df = st.session_state.edited_data.style
-        
-        # Apply screening classification colors
-        if screening_col:
-            styled_df = styled_df.map(
-                color_screening_classification, 
-                subset=[screening_col]
-            )
-        
-        # Apply quality value colors
-        if quality_cols:
-            styled_df = styled_df.map(
-                color_quality_values,
-                subset=quality_cols
-            )
-        
-        # Apply boolean value colors
-        if boolean_cols:
-            styled_df = styled_df.map(
-                color_boolean_values,
-                subset=boolean_cols
-            )
-        
-        # Create a copy for display with proper numbering
+        # Create a copy for display with proper numbering and set it as index
         display_df = st.session_state.edited_data.copy()
         
-        # Add sequential numbering starting from 1 as a new column at the front
-        display_df.insert(0, 'No.', range(1, len(display_df) + 1))
+        # Set the index to start from 1 for display purposes
+        display_df.index = range(1, len(display_df) + 1)
+        display_df.index.name = 'No.'
         
-        # Apply the same styling to the display dataframe
+        # Apply styling to the display dataframe
         styled_display_df = display_df.style
         
-        # Re-apply styling (need to account for the new 'No.' column)
         # Apply screening classification colors
         if screening_col:
             styled_display_df = styled_display_df.map(
@@ -1590,7 +1571,7 @@ def main():
                 subset=boolean_cols
             )
         
-        # Display the styled dataframe with numbering
+        # Display the styled dataframe - this will show only the 'No.' index column
         st.dataframe(styled_display_df, use_container_width=True, height=400)
         
         # Show changes indicator - compare with fresh data
@@ -1609,8 +1590,10 @@ def main():
                     if success:
                         st.success("Changes saved to GitHub successfully!")
                         # Refresh the baseline data after successful save
-                        st.session_state.edited_data = create_display_dataframe(screening_data)[0].copy()
-                        st.session_state.original_data = create_display_dataframe(screening_data)[1].copy()
+                        fresh_display, fresh_original = create_display_dataframe(screening_data)
+                        st.session_state.edited_data = fresh_display.copy()
+                        st.session_state.original_data = fresh_original.copy()
+                        st.session_state.index_mapping = {i: i for i in range(len(fresh_display))}
                         st.rerun()
                     else:
                         st.error("Failed to save changes to GitHub")
@@ -1622,15 +1605,15 @@ def main():
             changes = []
             baseline_display_data, _ = create_display_dataframe(screening_data)
             
-            for idx in st.session_state.edited_data.index:
+            for display_idx in st.session_state.edited_data.index:
                 if rejection_reasons_col:
-                    original = str(baseline_display_data.loc[idx, rejection_reasons_col]) if pd.notna(baseline_display_data.loc[idx, rejection_reasons_col]) else ""
-                    edited = str(st.session_state.edited_data.loc[idx, rejection_reasons_col]) if pd.notna(st.session_state.edited_data.loc[idx, rejection_reasons_col]) else ""
+                    original = str(baseline_display_data.loc[display_idx, rejection_reasons_col]) if pd.notna(baseline_display_data.loc[display_idx, rejection_reasons_col]) else ""
+                    edited = str(st.session_state.edited_data.loc[display_idx, rejection_reasons_col]) if pd.notna(st.session_state.edited_data.loc[display_idx, rejection_reasons_col]) else ""
                     
                     if original != edited:
-                        pdf_name = st.session_state.edited_data.loc[idx, 'PDF']
+                        pdf_name = st.session_state.edited_data.loc[display_idx, 'PDF']
                         changes.append({
-                            'No.': idx + 1,
+                            'No.': display_idx + 1,
                             'PDF': pdf_name,
                             'Original': original,
                             'New': edited
@@ -1647,6 +1630,7 @@ def main():
             display_data, original_transposed_data = create_display_dataframe(screening_data)
             st.session_state.edited_data = display_data.copy()
             st.session_state.original_data = original_transposed_data.copy()
+            st.session_state.index_mapping = {i: i for i in range(len(display_data))}
             st.rerun()
         
         # Add download button for the edited Excel data
@@ -1681,15 +1665,23 @@ def main():
             
             # Create download dataframe with numbering for better user experience
             download_df = df.copy()
-            download_df.insert(0, 'No.', range(1, len(download_df) + 1))
+            download_df.index = range(1, len(download_df) + 1)
+            download_df.index.name = 'No.'
             
-            # Write headers
-            for col_idx, col_name in enumerate(download_df.columns):
+            # Write the index header
+            worksheet.write(0, 0, 'No.')
+            
+            # Write other column headers
+            for col_idx, col_name in enumerate(download_df.columns, start=1):
                 worksheet.write(0, col_idx, col_name)
             
             # Write data with formatting
             for row_idx, (index, row) in enumerate(download_df.iterrows(), start=1):
-                for col_idx, (col_name, value) in enumerate(row.items()):
+                # Write the index (row number)
+                worksheet.write(row_idx, 0, index)
+                
+                # Write the data
+                for col_idx, (col_name, value) in enumerate(row.items(), start=1):
                     cell_format = None
                     
                     # Handle NaN/None values
@@ -1725,8 +1717,9 @@ def main():
                         worksheet.write(row_idx, col_idx, value)
             
             # Auto-adjust column widths
-            for col_idx, col_name in enumerate(download_df.columns):
-                max_length = max(len(str(col_name)), max(len(str(download_df.iloc[row_idx, col_idx])) for row_idx in range(len(download_df))))
+            worksheet.set_column(0, 0, 5)  # No. column
+            for col_idx, col_name in enumerate(download_df.columns, start=1):
+                max_length = max(len(str(col_name)), max(len(str(download_df.iloc[row_idx, col_idx-1])) for row_idx in range(len(download_df))))
                 worksheet.set_column(col_idx, col_idx, min(max_length + 2, 50))
             
             workbook.close()
@@ -1741,6 +1734,7 @@ def main():
             file_name="screening_data_edited.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
     
     with tab2:
         st.subheader("Incremental Impact Analysis")

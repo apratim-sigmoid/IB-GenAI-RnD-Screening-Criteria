@@ -42,6 +42,249 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# Sankey chart functions
+@st.cache_data
+def load_sankey_data():
+    """Load and process the Excel file for Sankey diagram"""
+    try:
+        # Read the Excel file for sankey chart
+        df = pd.read_excel('screening_classification_criteria.xlsx')
+        
+        # Clean the data - remove rows where Category is NaN
+        df = df.dropna(subset=['Category'])
+        
+        return df
+    except FileNotFoundError:
+        st.warning("Sankey data file 'screening_classification_criteria.xlsx' not found. Sankey chart will be skipped.")
+        return None
+    except Exception as e:
+        st.warning(f"Error loading sankey data: {str(e)}")
+        return None
+
+def hex_to_rgb(hex_color):
+    """Convert hex color to RGB tuple"""
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+def create_sankey_data(df):
+    """Create nodes and links for the Sankey diagram"""
+    
+    # Darker color mapping for action types
+    colors = {
+        'Needs Summary': '#a8d5a8',     # Darker green
+        'Record for Later': '#f0d966',  # Darker yellow
+        'No Action': '#e89ea3'          # Darker red
+    }
+    
+    nodes = []
+    links = []
+    node_colors = []
+    # Add positioning arrays for better control
+    node_x = []
+    node_y = []
+    
+    # Level 0: Root node
+    nodes.append('Screening Criterias')
+    node_colors.append('#FFB7B2')  # Soft pink for root
+    node_x.append(0.01)  # Far left
+    node_y.append(0.5)   # Center vertically
+    
+    # Level 1: Categories
+    categories = df['Category'].unique()
+    cat_count = len(categories)
+    # Calculate compact spacing for categories
+    cat_spacing = 0.4 / cat_count  # Use only 60% of vertical space
+    cat_start_y = 0.3  # Start at 20% from top
+    for i, cat in enumerate(categories):
+        nodes.append(cat)
+        node_colors.append('#FFB7B2')  # Soft pink for categories
+        node_x.append(0.20)  # Position categories
+        node_y.append(cat_start_y + i * cat_spacing)  # Compact vertical distribution
+        
+        # Add link from root to category
+        links.append({
+            'source': 0,  # Root node index
+            'target': len(nodes) - 1,
+            'value': 1,
+            'color': '#f8d6d5'  # Light pink for root to category links
+        })
+    
+    # Level 2: Specific Criteria
+    criteria_start_idx = len(nodes)
+    criteria_count = len(df)
+    # Calculate compact spacing for criteria
+    criteria_spacing = 0.6 / criteria_count  # Use only 70% of vertical space
+    criteria_start_y = 0.20  # Start at 15% from top
+    for i, (_, row) in enumerate(df.iterrows()):
+        criteria_name = row['Specific Criteria']  
+        nodes.append(criteria_name)
+        node_colors.append('#808080')  # Gray for criteria
+        node_x.append(0.35)  # Position criteria in the middle
+        node_y.append(criteria_start_y + i * criteria_spacing)  # Compact vertical distribution
+        
+        # Add link from Category to Specific Criteria
+        cat_idx = list(categories).index(row['Category']) + 1  # +1 because of root node
+        criteria_idx = len(nodes) - 1
+        links.append({
+            'source': cat_idx,
+            'target': criteria_idx,
+            'value': 1,
+            'color': '#f8d6d5'  # Light pink for category to criteria links
+        })
+    
+    # Level 3: Action Values
+    action_start_idx = len(nodes)
+    action_nodes_added = []
+    action_node_order = []  # Track order of action nodes
+    
+    # Process each row to create action value nodes and links
+    for row_idx, row in df.iterrows():
+        criteria_idx = criteria_start_idx + row_idx
+        
+        # Process each action column in order
+        for action_col in ['Needs Summary', 'Record for Later', 'No Action']:
+            value = row[action_col]
+            
+            # Skip if value is NaN, False, or None
+            if pd.isna(value) or value is False or value is None:
+                continue
+            
+            # Handle different value types
+            if value is True:
+                # For boolean True values, use a descriptive name
+                node_name = f"{row['Specific Criteria']} (Yes)"
+            elif isinstance(value, str):
+                # Use the entire string as a single node (don't split)
+                node_name = value.strip().strip('"')
+            else:
+                continue
+            
+            # Skip empty values
+            if not node_name:
+                continue
+                
+            # Check if this node already exists
+            if node_name not in nodes:
+                nodes.append(node_name)
+                node_colors.append(colors[action_col])
+                action_nodes_added.append(node_name)
+                action_node_order.append((node_name, action_col))
+                # Position action nodes NOT at the far right edge
+                node_x.append(0.60)  # Move left from 0.85 to leave space for labels
+                # We'll set Y positions after all nodes are added
+                node_y.append(0.5)  # Temporary position
+            
+            action_node_idx = nodes.index(node_name)
+            
+            # Add link from criteria to action value
+            # Convert hex to rgba for transparency
+            r, g, b = hex_to_rgb(colors[action_col])
+            rgba_color = f'rgba({r},{g},{b},0.5)'
+            
+            links.append({
+                'source': criteria_idx,
+                'target': action_node_idx,
+                'value': 1,
+                'color': rgba_color
+            })
+    
+    # Create dummy nodes to force labels on the right
+    dummy_nodes_start = len(nodes)
+    for i, (node_name, action_col) in enumerate(action_node_order):
+        # Add invisible dummy node
+        nodes.append('')  # Empty label
+        node_colors.append('rgba(0,0,0,0)')  # Transparent
+        node_x.append(0.99)  # Far right
+        node_y.append((i + 0.5) / len(action_node_order))
+        
+        # Add invisible link from action node to dummy
+        action_idx = nodes.index(node_name)
+        links.append({
+            'source': action_idx,
+            'target': len(nodes) - 1,
+            'value': 0.001,  # Very small value to make it nearly invisible
+            'color': 'rgba(0,0,0,0)'  # Transparent
+        })
+    
+    # Update Y positions for action nodes to match their order
+    action_node_count = len(action_nodes_added)
+    for i, (node_name, _) in enumerate(action_node_order):
+        node_idx = nodes.index(node_name)
+        node_y[node_idx] = (i + 0.5) / action_node_count
+    
+    return nodes, links, node_colors, node_x, node_y
+
+def create_sankey_chart(sankey_df):
+    """Create the Sankey chart"""
+    if sankey_df is None:
+        return None
+    
+    try:
+        # Create Sankey data
+        nodes, links, node_colors, node_x, node_y = create_sankey_data(sankey_df)
+        
+        # Create Sankey diagram with explicit positioning
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=20,  # Padding between nodes
+                thickness=12,  # Node thickness
+                line=dict(color="rgba(0,0,0,0)", width=0),  # Transparent border
+                label=nodes,
+                color=node_colors,
+                x=node_x,  # Explicit X positioning
+                y=node_y,  # Explicit Y positioning
+                hovertemplate="<extra></extra>"  # Disable hover for nodes
+            ),
+            link=dict(
+                source=[link['source'] for link in links],
+                target=[link['target'] for link in links],
+                value=[link['value'] for link in links],
+                color=[link['color'] for link in links],
+                hovertemplate="<extra></extra>"  # Disable hover for links
+            ),
+            textfont=dict(
+                color="black",
+                size=12,  # Slightly smaller for dashboard integration
+                family="Arial, sans-serif"
+            ),
+            hoverinfo="none"  # Disable all hover info
+        )])
+        
+        fig.update_layout(
+            title=dict(
+                text="Screening Classification Flow",
+                font=dict(size=18, weight='bold'),
+                x=0.5,
+                xanchor='center'
+            ),
+            font=dict(
+                size=12,
+                color="black", 
+                family="Arial, sans-serif"
+            ),
+            height=600,  # Adjusted for dashboard integration
+            margin=dict(l=50, r=50, t=60, b=30),
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            showlegend=False
+        )
+        
+        # Update traces to ensure no text shadows
+        fig.update_traces(
+            textfont=dict(
+                color="black",
+                size=12,
+                family="Arial, sans-serif"
+            ),
+            selector=dict(type='sankey')
+        )
+        
+        return fig
+    except Exception as e:
+        st.warning(f"Error creating Sankey chart: {str(e)}")
+        return None
+    
+
 def convert_back_to_original_format(transposed_df):
     """Convert the transposed dataframe back to original Excel format"""
     
@@ -176,8 +419,11 @@ def load_data():
     # Read the Excel file as screening_data (includes metadata)
     screening_data = pd.read_excel('screening_criteria_dataset.xlsx')
     
-    # Create df by excluding metadata category
-    df = screening_data[screening_data['Category'] != 'Metadata'].copy()
+    # Create df by excluding metadata AND classification system categories from analysis
+    df = screening_data[
+        (screening_data['Category'] != 'Metadata') & 
+        (screening_data['Category'] != 'Classification System')
+    ].copy()
     
     # Get PDF names (all columns except first two)
     pdf_columns = df.columns[2:].tolist()
@@ -192,7 +438,8 @@ def load_data():
             'pdf_columns': pdf_columns
         })
     
-    return df, criteria_data, pdf_columns
+    
+    return df, criteria_data, pdf_columns, screening_data
 
 def parse_value(value):
     """Parse different types of values in the dataset"""
@@ -306,10 +553,7 @@ def get_pdfs_matching_criteria(criteria_data, criteria_index, sample_size_range=
             elif isinstance(parsed_value, dict) and len(parsed_value) > 0:
                 matching_pdfs.append(pdf_name)
             elif isinstance(parsed_value, str) and parsed_value not in ['', 'Unknown', 'No Action']:
-                if criteria['criteria'] == 'Screening classification' and parsed_value in ['Needs Summary', 'Record for Later']:
-                    matching_pdfs.append(pdf_name)
-                elif criteria['criteria'] != 'Screening classification':
-                    matching_pdfs.append(pdf_name)
+                matching_pdfs.append(pdf_name)
     
     return matching_pdfs
 
@@ -410,9 +654,7 @@ def create_category_distribution(criteria_data, selected_indices, pdf_columns, s
         'Health Endpoints': '#2ca02c',      # Green
         'Product Categories': '#d62728',    # Red
         'Study Quality': '#9467bd',         # Purple
-        'Classification System': '#8c564b', # Brown
         'Others': '#e377c2',                # Pink
-        'Other': '#e377c2'                  # Pink (alternate spelling)
     }
     
     # Add all criteria in original order (as they appear in the data)
@@ -507,7 +749,9 @@ def create_category_distribution(criteria_data, selected_indices, pdf_columns, s
     return fig
 
 def create_incremental_impact_chart(criteria_data, selected_indices, pdf_columns, sample_size_range=None):
-    """Create a chart showing incremental impact of each criteria"""
+    """Create a horizontal bar chart showing incremental impact of unselected criteria in same order as main chart"""
+    
+    # Get currently selected PDFs
     current_pdfs = set()
     for idx in selected_indices:
         if 'sample size' in criteria_data[idx]['criteria'].lower():
@@ -515,114 +759,152 @@ def create_incremental_impact_chart(criteria_data, selected_indices, pdf_columns
         else:
             current_pdfs.update(get_pdfs_matching_criteria(criteria_data, idx))
     
-    impact_data = []
+    # Color palette for categories (same as main chart)
+    category_colors = {
+        'Product Mentions': '#1f77b4',      # Blue
+        'Funding Sources': '#ff7f0e',       # Orange
+        'Health Endpoints': '#2ca02c',      # Green
+        'Product Categories': '#d62728',    # Red
+        'Study Quality': '#9467bd',         # Purple
+        'Others': '#e377c2',                # Pink
+    }
+    
+    # Prepare data for unselected criteria only, in original order
+    labels = []
+    incremental_values = []
+    colors = []
+    
     for idx, criteria in enumerate(criteria_data):
+        # Only include criteria that are NOT selected
         if idx not in selected_indices:
-            if 'sample size' in criteria['criteria'].lower():
-                new_pdfs = set(get_pdfs_matching_criteria(criteria_data, idx, sample_size_range))
+            category = criteria['category']
+            criteria_name = criteria['criteria']
+            
+            # Get matching PDFs for this criteria
+            if 'sample size' in criteria_name.lower():
+                matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx, sample_size_range)
             else:
-                new_pdfs = set(get_pdfs_matching_criteria(criteria_data, idx))
+                matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx)
             
-            incremental = len(new_pdfs - current_pdfs)
-            total = len(new_pdfs)
-            overlap = len(new_pdfs & current_pdfs)
+            # Calculate incremental impact (new PDFs this criteria would add)
+            new_pdfs = set(matching_pdfs) - current_pdfs
+            incremental = len(new_pdfs)
             
-            impact_data.append({
-                'criteria': f"{criteria['category']} - {criteria['criteria']}",
-                'incremental': incremental,
-                'overlap': overlap,
-                'total': total
-            })
+            # Only include if there's some incremental value
+            if incremental > 0:
+                labels.append(criteria_name)
+                incremental_values.append(incremental)
+                
+                # Get color for this category
+                color = category_colors.get(category, '#7f7f7f')  # Default gray if category not found
+                colors.append(color)
     
-    # Sort by incremental impact
-    impact_data.sort(key=lambda x: x['incremental'], reverse=True)
-    impact_data = impact_data[:10]  # Top 10
+    if not labels:
+        return None
     
-    if impact_data:
-        df_impact = pd.DataFrame(impact_data)
-        
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            name='New PDFs',
-            x=df_impact['criteria'],
-            y=df_impact['incremental'],
-            marker_color='green'
-        ))
-        fig.add_trace(go.Bar(
-            name='Already Selected',
-            x=df_impact['criteria'],
-            y=df_impact['overlap'],
-            marker_color='gray'
-        ))
-        
-        fig.update_layout(
-            title="Top 10 Criteria by Incremental Impact",
-            xaxis_title="Criteria",
-            yaxis_title="Number of PDFs",
-            barmode='stack',
-            height=500,
-            xaxis_tickangle=-45
-        )
-        
-        return fig
-    return None
+    # Create horizontal bar chart
+    fig = go.Figure()
+    
+    # Add incremental impact bars
+    fig.add_trace(go.Bar(
+        name='New PDFs',
+        y=labels,
+        x=incremental_values,
+        orientation='h',
+        marker=dict(
+            color=colors,
+            opacity=1.0,
+            line=dict(color='rgba(0,0,0,0.5)', width=1)
+        ),
+        text=[f'+{v}' for v in incremental_values],
+        textposition='inside',
+        textfont=dict(color='white', size=10, weight='bold'),
+        hovertemplate='%{y}<br>New PDFs: +%{x}<extra></extra>'
+    ))
+    
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text="Incremental Impact of Unselected Criteria in PDF Selection",
+            font=dict(size=18, weight='bold'),
+            x=0.5,
+            xanchor='center'
+        ),
+        xaxis=dict(
+            title="Number of New PDFs",
+            showgrid=True,
+            gridcolor='rgba(0,0,0,0.1)',
+            range=[0, max(incremental_values) * 1.1] if incremental_values else [0, 1]
+        ),
+        yaxis=dict(
+            title="",
+            autorange='reversed',  # Show from top to bottom (same as main chart)
+            tickfont=dict(size=11)
+        ),
+        height=max(400, len(labels) * 35),  # Dynamic height: minimum 400px, 35px per bar
+        margin=dict(l=300, r=100, t=80, b=50),  # Larger left margin for labels
+        showlegend=False,
+        plot_bgcolor='white'
+    )
+    
+    return fig
 
-def create_product_distribution(criteria_data, selected_indices):
-    """Create visualization for product mentions"""
+
+def create_product_distribution(criteria_data, selected_indices=None):
+    """Create visualization for product mentions - shows all data regardless of selection"""
     imperial_products = defaultdict(int)
     competitor_products = defaultdict(lambda: defaultdict(int))
     
-    # Find product mention criteria
+    # Find product mention criteria and process ALL data (not just selected)
     for idx, criteria in enumerate(criteria_data):
-        if idx in selected_indices:
-            if criteria['criteria'] == 'Imperial Products (e.g. Blu)':
-                for i, value in enumerate(criteria['values']):
-                    # Skip completely empty values
-                    if pd.isna(value):
-                        continue
-                    
-                    parsed = parse_value(value)
-                    
-                    # Handle list of products (this is the main case we expect)
-                    if isinstance(parsed, list) and len(parsed) > 0:
-                        for product in parsed:
-                            if product and str(product).strip():
-                                clean_product = str(product).strip()
-                                # Remove any brackets or quotes that might be present
-                                clean_product = clean_product.replace('[', '').replace(']', '').replace('"', '').replace("'", "")
-                                if clean_product:  # Only add non-empty products
-                                    imperial_products[clean_product] += 1
-                    
-                    # Handle single product as string (fallback case)
-                    elif isinstance(parsed, str) and parsed.strip() and parsed.strip() != '[]':
-                        clean_product = parsed.strip()
-                        if clean_product not in ['Unknown', 'No Action', '[]', '']:
-                            # If it looks like a list string, try to parse it further
-                            if clean_product.startswith('[') and clean_product.endswith(']'):
-                                # Remove brackets and split by comma
-                                inner_content = clean_product[1:-1]
-                                if inner_content.strip():
-                                    products = [p.strip().replace('"', '').replace("'", "") for p in inner_content.split(',')]
-                                    for product in products:
-                                        if product and product.strip():
-                                            imperial_products[product.strip()] += 1
-                            else:
+        if criteria['criteria'] == 'Imperial Brands Products':
+            for i, value in enumerate(criteria['values']):
+                # Skip completely empty values
+                if pd.isna(value):
+                    continue
+                
+                parsed = parse_value(value)
+                
+                # Handle list of products (this is the main case we expect)
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    for product in parsed:
+                        if product and str(product).strip():
+                            clean_product = str(product).strip()
+                            # Remove any brackets or quotes that might be present
+                            clean_product = clean_product.replace('[', '').replace(']', '').replace('"', '').replace("'", "")
+                            if clean_product:  # Only add non-empty products
                                 imperial_products[clean_product] += 1
-            
-            elif criteria['criteria'] == 'Competitor Products':
-                for i, value in enumerate(criteria['values']):
-                    parsed = parse_value(value)
-                    # Only process if we have actual data
-                    if pd.isna(value) or value in ['', 'Unknown', 'No Action', 'False', 'false', None]:
-                        continue
-                        
-                    if isinstance(parsed, dict):
-                        for company, products in parsed.items():
-                            if isinstance(products, list):
+                
+                # Handle single product as string (fallback case)
+                elif isinstance(parsed, str) and parsed.strip() and parsed.strip() != '[]':
+                    clean_product = parsed.strip()
+                    if clean_product not in ['Unknown', 'No Action', '[]', '']:
+                        # If it looks like a list string, try to parse it further
+                        if clean_product.startswith('[') and clean_product.endswith(']'):
+                            # Remove brackets and split by comma
+                            inner_content = clean_product[1:-1]
+                            if inner_content.strip():
+                                products = [p.strip().replace('"', '').replace("'", "") for p in inner_content.split(',')]
                                 for product in products:
-                                    if product and str(product).strip() and str(product).strip() != '':
-                                        clean_product = str(product).strip().replace('"', '').replace("'", "")
-                                        competitor_products[company][clean_product] += 1
+                                    if product and product.strip():
+                                        imperial_products[product.strip()] += 1
+                        else:
+                            imperial_products[clean_product] += 1
+        
+        elif criteria['criteria'] == 'Competitor Products':
+            for i, value in enumerate(criteria['values']):
+                parsed = parse_value(value)
+                # Only process if we have actual data
+                if pd.isna(value) or value in ['', 'Unknown', 'No Action', 'False', 'false', None]:
+                    continue
+                    
+                if isinstance(parsed, dict):
+                    for company, products in parsed.items():
+                        if isinstance(products, list):
+                            for product in products:
+                                if product and str(product).strip() and str(product).strip() != '':
+                                    clean_product = str(product).strip().replace('"', '').replace("'", "")
+                                    competitor_products[company][clean_product] += 1
     
     # Create combined visualization
     figs = []
@@ -667,8 +949,8 @@ def create_product_distribution(criteria_data, selected_indices):
             # Assign specific colors to known companies
             company_colors = {
                 'Imperial Brands': '#f07300',  # Orange
-                'Philip Morris International': '#d62728',  # Red
-                'JTI': '#2ca02c',             # Green
+                'Philip Morris International': "#a81717",  # Red
+                'Japan Tobacco International': '#2ca02c',             # Green
                 'British American Tobacco': '#1f77b4'  # Blue
             }
             
@@ -767,11 +1049,13 @@ def create_product_distribution(criteria_data, selected_indices):
 # Main app
 def main():
     st.title("📄 PDF Screening Criteria Dashboard")
-    st.markdown("Select screening criteria to filter research papers")
     
     # Load data
-    df, criteria_data, pdf_columns = load_data()
+    df, criteria_data, pdf_columns, screening_data = load_data()
     total_pdfs = len(pdf_columns)
+
+    # Load Sankey data
+    sankey_df = load_sankey_data()
     
     # Extract sample sizes to determine slider range
     sample_sizes = extract_sample_sizes(criteria_data)
@@ -822,6 +1106,14 @@ def main():
                 sample_size_idx = idx
                 break
         
+        # PRE-CALCULATE current selected PDFs for incremental impact calculation
+        current_selected = set()
+        for idx in st.session_state.selected_criteria:
+            if 'sample size' in criteria_data[idx]['criteria'].lower():
+                current_selected.update(get_pdfs_matching_criteria(criteria_data, idx, st.session_state.sample_size_range))
+            else:
+                current_selected.update(get_pdfs_matching_criteria(criteria_data, idx))
+        
         for category, criteria_list in categories.items():
             st.subheader(category)
             for idx, criteria_name in criteria_list:
@@ -863,30 +1155,38 @@ def main():
                 matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx)
                 
                 # Calculate incremental impact
-                current_selected = set()
-                for sel_idx in selected_indices:
-                    if 'sample size' in criteria_data[sel_idx]['criteria'].lower():
-                        current_selected.update(get_pdfs_matching_criteria(criteria_data, sel_idx, sample_size_range))
-                    else:
-                        current_selected.update(get_pdfs_matching_criteria(criteria_data, sel_idx))
-                
-                new_pdfs = set(matching_pdfs) - current_selected
-                incremental = len(new_pdfs)
+                # If this criteria is already selected, don't show incremental count
+                # If not selected, show how many new PDFs it would add
                 
                 label = f"{criteria_name} ({len(matching_pdfs)} PDFs"
-                if incremental > 0 and len(current_selected) > 0:
-                    label += f", +{incremental} new"
+                
+                if idx not in st.session_state.selected_criteria:
+                    # Only show incremental count if this criteria is NOT selected
+                    new_pdfs = set(matching_pdfs) - current_selected
+                    incremental = len(new_pdfs)
+                    if incremental > 0 and len(current_selected) > 0:
+                        label += f", +{incremental} new"
+                
                 label += ")"
                 
                 # Use session state to determine checkbox value
                 checkbox_value = idx in st.session_state.selected_criteria
                 
-                if st.checkbox(label, value=checkbox_value, key=f"criteria_{idx}"):
-                    st.session_state.selected_criteria.add(idx)
+                # Check if checkbox state changed
+                checkbox_result = st.checkbox(label, value=checkbox_value, key=f"criteria_{idx}")
+                
+                if checkbox_result != checkbox_value:
+                    # State changed, update session state and rerun
+                    if checkbox_result:
+                        st.session_state.selected_criteria.add(idx)
+                    else:
+                        st.session_state.selected_criteria.discard(idx)
+                    st.rerun()
+                
+                # Add to selected_indices if currently selected
+                if checkbox_result:
                     if idx not in selected_indices:
                         selected_indices.append(idx)
-                else:
-                    st.session_state.selected_criteria.discard(idx)
         
         # Add selected criteria from session state to selected_indices
         for idx in st.session_state.selected_criteria:
@@ -915,9 +1215,26 @@ def main():
     
     # Progress bar
     st.plotly_chart(create_progress_bar(len(selected_pdfs), total_pdfs), use_container_width=True)
+
+
+    # Add Sankey chart below the progress bar
+    if sankey_df is not None:
+        sankey_fig = create_sankey_chart(sankey_df)
+        if sankey_fig:
+            st.plotly_chart(sankey_fig, use_container_width=True, config={
+                'displayModeBar': True,
+                'staticPlot': False,
+                'toImageButtonOptions': {
+                    'format': 'png',
+                    'filename': 'sankey_chart',
+                    'height': 600,
+                    'width': 1200,
+                    'scale': 1
+                }
+            })
     
     # Create tabs for different visualizations
-    tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Incremental Impact", "Product Analysis", "Selected PDFs"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview", "Incremental Impact", "Product Analysis", "Health Endpoints", "Selected PDFs"])
     
     with tab1:
         # Helper function for formatting competitor products
@@ -1001,9 +1318,6 @@ def main():
         # Raw data table (transposed)
         st.subheader("Screening Data")
         
-        # Read the full screening data including metadata
-        screening_data = pd.read_excel('screening_criteria_dataset.xlsx')
-        
         # Transpose the data so criteria are columns and PDFs are rows
         transposed_data = screening_data.set_index(['Category', 'Specific Criteria']).T
         
@@ -1057,22 +1371,25 @@ def main():
             
             # Create expandable editor for each row
             with st.expander("📝 Click to edit rejection reasons for individual PDFs"):
-                for idx, row in st.session_state.edited_data.iterrows():
-                    pdf_name = row['PDF']
-                    current_reason = str(row[rejection_reasons_col]) if pd.notna(row[rejection_reasons_col]) else ""
-                    
-                    # Create a text input for each PDF
-                    new_reason = st.text_area(
-                        f"**{pdf_name}**",
-                        value=current_reason,
-                        height=68,
-                        key=f"rejection_reason_{idx}",
-                        help="Edit the rejection reason for this PDF"
-                    )
-                    
-                    # Update the edited data if changed
-                    if new_reason != current_reason:
-                        st.session_state.edited_data.loc[idx, rejection_reasons_col] = new_reason
+                # Use a container with height constraint
+                container = st.container(height=400)
+                
+                with container:
+                    for idx, row in st.session_state.edited_data.iterrows():
+                        pdf_name = row['PDF']
+                        current_reason = str(row[rejection_reasons_col]) if pd.notna(row[rejection_reasons_col]) else ""
+                        
+                        # Create a text input for each PDF
+                        new_reason = st.text_input(
+                            f"**{pdf_name}**",
+                            value=current_reason,
+                            key=f"rejection_reason_{idx}",
+                            help="Edit the rejection reason for this PDF"
+                        )
+                        
+                        # Update the edited data if changed
+                        if new_reason != current_reason:
+                            st.session_state.edited_data.loc[idx, rejection_reasons_col] = new_reason
         
         # Create styling functions
         def color_screening_classification(val):
@@ -1306,25 +1623,90 @@ def main():
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Select some criteria to see incremental impact of additional criteria")
+                st.info("All remaining criteria would add 0 new PDFs to your current selection")
         else:
-            # Show initial impact of all criteria
-            impact_data = []
+            # Show initial impact of all criteria when nothing is selected
+            # Use same format as the main chart for consistency
+            
+            # Color palette for categories (same as main chart)
+            category_colors = {
+                'Product Mentions': '#1f77b4',      # Blue
+                'Funding Sources': '#ff7f0e',       # Orange
+                'Health Endpoints': '#2ca02c',      # Green
+                'Product Categories': '#d62728',    # Red
+                'Study Quality': '#9467bd',         # Purple
+                'Others': '#e377c2',                # Pink
+            }
+            
+            labels = []
+            pdf_counts = []
+            colors = []
+            
+            # Add all criteria in original order (as they appear in the data)
             for idx, criteria in enumerate(criteria_data):
-                if 'sample size' in criteria['criteria'].lower():
+                category = criteria['category']
+                criteria_name = criteria['criteria']
+                
+                # Get matching PDFs for this criteria
+                if 'sample size' in criteria_name.lower():
                     matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx, sample_size_range)
                 else:
                     matching_pdfs = get_pdfs_matching_criteria(criteria_data, idx)
                 
-                impact_data.append({
-                    'Criteria': f"{criteria['category']} - {criteria['criteria']}",
-                    'PDFs': len(matching_pdfs)
-                })
+                labels.append(criteria_name)
+                pdf_counts.append(len(matching_pdfs))
+                
+                # Get color for this category
+                color = category_colors.get(category, '#7f7f7f')  # Default gray if category not found
+                colors.append(color)
             
-            df_impact = pd.DataFrame(impact_data).sort_values('PDFs', ascending=False).head(15)
-            fig = px.bar(df_impact, x='Criteria', y='PDFs', title="Top 15 Criteria by PDF Coverage")
-            fig.update_layout(xaxis_tickangle=-45, height=500)
+            # Create horizontal bar chart
+            fig = go.Figure()
+            
+            # Add PDF count bars
+            fig.add_trace(go.Bar(
+                name='PDFs Available',
+                y=labels,
+                x=pdf_counts,
+                orientation='h',
+                marker=dict(
+                    color=colors,
+                    opacity=1.0,
+                    line=dict(color='rgba(0,0,0,0.5)', width=1)
+                ),
+                text=[f'{v}' for v in pdf_counts],
+                textposition='inside',
+                textfont=dict(color='white', size=10, weight='bold'),
+                hovertemplate='%{y}<br>Available PDFs: %{x}<extra></extra>'
+            ))
+            
+            # Update layout
+            fig.update_layout(
+                title=dict(
+                    text="PDF Coverage by Individual Criteria (No Selection)",
+                    font=dict(size=18, weight='bold'),
+                    x=0.5,
+                    xanchor='center'
+                ),
+                xaxis=dict(
+                    title="Number of PDFs",
+                    showgrid=True,
+                    gridcolor='rgba(0,0,0,0.1)',
+                    range=[0, max(pdf_counts) * 1.1] if pdf_counts else [0, 1]
+                ),
+                yaxis=dict(
+                    title="",
+                    autorange='reversed',  # Show from top to bottom (same as main chart)
+                    tickfont=dict(size=11)
+                ),
+                height=max(400, len(labels) * 35),  # Dynamic height: minimum 400px, 35px per bar
+                margin=dict(l=300, r=100, t=80, b=50),  # Larger left margin for labels
+                showlegend=False,
+                plot_bgcolor='white'
+            )
+            
             st.plotly_chart(fig, use_container_width=True)
+
     
     with tab3:
         st.subheader("Product Analysis")
@@ -1333,32 +1715,108 @@ def main():
             for fig in product_figs:
                 st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Select product-related criteria to see product distribution analysis")
-        
-        # Health endpoints analysis
-        if any(criteria_data[idx]['criteria'] == 'Specific health conditions' for idx in selected_indices):
-            st.subheader("Health Endpoints Distribution")
-            health_conditions = defaultdict(int)
-            
-            for idx in selected_indices:
-                if criteria_data[idx]['criteria'] == 'Specific health conditions':
-                    for value in criteria_data[idx]['values']:
-                        parsed = parse_value(value)
-                        if isinstance(parsed, list):
-                            for condition in parsed:
-                                health_conditions[condition] += 1
-            
-            if health_conditions:
-                fig = px.bar(
-                    x=list(health_conditions.keys()),
-                    y=list(health_conditions.values()),
-                    title="Health Conditions Mentioned in Selected Papers",
-                    labels={'x': 'Health Condition', 'y': 'Number of Papers'}
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            st.info("No product data found in the dataset")
     
     with tab4:
-        st.subheader("Selected PDFs")
+            st.subheader("Health Endpoints Distribution")
+            
+            # Create visualization for health endpoints - shows all data regardless of selection
+            health_conditions = defaultdict(int)
+            
+            # Process ALL health conditions data (similar to imperial products logic)
+            for idx, criteria in enumerate(criteria_data):
+                if criteria['criteria'] == 'Specific health conditions':
+                    for i, value in enumerate(criteria['values']):
+                        # Skip completely empty values
+                        if pd.isna(value):
+                            continue
+                        
+                        parsed = parse_value(value)
+                        
+                        # Handle list of health conditions (this is the main case we expect)
+                        if isinstance(parsed, list) and len(parsed) > 0:
+                            for condition in parsed:
+                                if condition and str(condition).strip():
+                                    clean_condition = str(condition).strip()
+                                    # Remove any brackets or quotes that might be present
+                                    clean_condition = clean_condition.replace('[', '').replace(']', '').replace('"', '').replace("'", "")
+                                    if clean_condition:  # Only add non-empty conditions
+                                        health_conditions[clean_condition] += 1
+                        
+                        # Handle single condition as string (fallback case)
+                        elif isinstance(parsed, str) and parsed.strip() and parsed.strip() != '[]':
+                            clean_condition = parsed.strip()
+                            if clean_condition not in ['Unknown', 'No Action', '[]', '']:
+                                # If it looks like a list string, try to parse it further
+                                if clean_condition.startswith('[') and clean_condition.endswith(']'):
+                                    # Remove brackets and split by comma
+                                    inner_content = clean_condition[1:-1]
+                                    if inner_content.strip():
+                                        conditions = [c.strip().replace('"', '').replace("'", "") for c in inner_content.split(',')]
+                                        for condition in conditions:
+                                            if condition and condition.strip():
+                                                health_conditions[condition.strip()] += 1
+                                else:
+                                    health_conditions[clean_condition] += 1
+            
+            if health_conditions:
+                # Create horizontal bar chart for better readability
+                conditions_list = list(health_conditions.keys())
+                counts_list = list(health_conditions.values())
+                
+                # Sort by count (descending) for better visualization
+                sorted_data = sorted(zip(conditions_list, counts_list), key=lambda x: x[1], reverse=True)
+                sorted_conditions, sorted_counts = zip(*sorted_data)
+                
+                fig = go.Figure()
+                
+                # Create horizontal bar chart with health-themed color
+                fig.add_trace(go.Bar(
+                    name='Health Conditions',
+                    y=list(sorted_conditions),
+                    x=list(sorted_counts),
+                    orientation='h',
+                    marker=dict(
+                        color="#6be399",  # Green color for health theme
+                        opacity=1.0,
+                        line=dict(color='rgba(0,0,0,0.3)', width=1)
+                    ),
+                    text=[f'{count}' for count in sorted_counts],
+                    textposition='inside',
+                    textfont=dict(color='white', size=10, weight='bold'),
+                    hovertemplate='%{y}<br>Papers: %{x}<extra></extra>'
+                ))
+                
+                # Update layout for better readability
+                fig.update_layout(
+                    title=dict(
+                        text="Health Conditions Distribution Across Papers",
+                        font=dict(size=18, weight='bold'),
+                        x=0.5,
+                        xanchor='center'
+                    ),
+                    xaxis=dict(
+                        title="Number of Papers",
+                        showgrid=True,
+                        gridcolor='rgba(0,0,0,0.1)',
+                        range=[0, max(sorted_counts) * 1.1] if sorted_counts else [0, 1]
+                    ),
+                    yaxis=dict(
+                        title="Health Conditions",
+                        autorange='reversed',  # Show highest counts at top
+                        tickfont=dict(size=11)
+                    ),
+                    height=max(400, len(conditions_list) * 35),  # Dynamic height based on number of conditions
+                    margin=dict(l=200, r=100, t=80, b=50),  # Larger left margin for condition names
+                    showlegend=False,
+                    plot_bgcolor='white'
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+
+    
+    with tab5:
+        st.subheader("Selected PDFs Based on Chosen Criterias")
         if selected_pdfs:
             # Create a detailed view of selected PDFs
             pdf_details = []
@@ -1412,10 +1870,7 @@ def main():
                         elif isinstance(value, dict) and len(value) > 0:
                             matches = True
                         elif isinstance(value, str) and value not in ['', 'Unknown', 'No Action', 'False', 'false']:
-                            if criteria_name == 'Screening classification' and value in ['Needs Summary', 'Record for Later']:
-                                matches = True
-                            elif criteria_name != 'Screening classification':
-                                matches = True
+                            matches = True
                     
                     if matches:
                         pdf_criteria.append(f"{criteria['category']} - {criteria['criteria']}")
@@ -1450,6 +1905,7 @@ def main():
             )
         else:
             st.info("No PDFs selected. Please select screening criteria from the sidebar.")
+
 
 if __name__ == "__main__":
     main()

@@ -1650,13 +1650,6 @@ def main():
             else:
                 st.info("No changes detected")
         
-        # Reset button
-        if st.button("🔄 Reset All Changes"):
-            display_data, original_transposed_data = create_display_dataframe(screening_data)
-            st.session_state.edited_data = display_data.copy()
-            st.session_state.original_data = original_transposed_data.copy()
-            st.session_state.index_mapping = {i: i for i in range(len(display_data))}
-            st.rerun()
         
         # Add download button for the edited Excel data
         def convert_to_excel_with_formatting(df):

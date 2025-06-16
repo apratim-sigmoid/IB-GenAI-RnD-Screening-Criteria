@@ -1459,7 +1459,7 @@ def main():
                 st.session_state.edited_data = current_display_data.copy()
                 st.session_state.original_data = current_original_data.copy()
                 st.session_state.index_mapping = {i: i for i in range(len(current_display_data))}
-                st.info("📱 Data refreshed from external changes")
+                st.info("Data refreshed from external changes")
         
         # Find the rejection reasons column
         rejection_reasons_col = None

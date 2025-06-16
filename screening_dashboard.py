@@ -413,7 +413,6 @@ def save_to_github_direct(df):
         return False
         
 
-@st.cache_data
 def load_data():
     """Load and process the screening criteria dataset"""
     # Read the Excel file as screening_data (includes metadata)
@@ -1527,7 +1526,6 @@ def main():
             st.rerun()
         
         # Add download button for the edited Excel data
-        @st.cache_data
         def convert_to_excel_with_formatting(df):
             """Convert dataframe to Excel with formatting intact"""
             from io import BytesIO

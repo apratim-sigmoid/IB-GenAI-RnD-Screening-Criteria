@@ -41,6 +41,31 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+    /* Target all expanders and then filter by content */
+    .streamlit-expanderHeader {
+        background-color: #fff5f5 !important;
+    }
+    
+    /* Or target the expander container */
+    div.streamlit-expander {
+        background-color: #fff5f5 !important;
+        border: 1px solid #ffe0e0 !important;
+    }
+    
+    /* Target using data-testid with descendant selector */
+    div[data-testid="column"] div[data-testid="stExpander"] {
+        background-color: #fff5f5 !important;
+    }
+    
+    /* Target the details element inside expander */
+    details {
+        background-color: #fff5f5 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 # Sankey chart functions
 @st.cache_data
